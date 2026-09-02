@@ -355,7 +355,7 @@ async function handleActionCallback(cb, action, env, ack) {
     const url = `${env.SITE_URL.replace(/\/$/, '')}/post.html?slug=${encodeURIComponent(slug)}`;
     await tg(env, 'sendMessage', {
       chat_id: chatId,
-      text: (draft ? `💤 Draft saved: “${sess.title}”\nSend it again (same title) to publish later.\n\n` : `✅ Published: “${sess.title}”\n\n`) + url,
+      text: (draft ? `💤 Draft saved: “${sess.title}”\nSend it again (same title) to publish later.\n\n${url}` : `✅ Published: “${sess.title}”\n\n${url}\n\n⏳ Note: GitHub Pages takes about 30–60 seconds to rebuild and show new posts.`),
     });
   }
 }

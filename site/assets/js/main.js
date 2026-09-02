@@ -82,7 +82,8 @@ async function renderIndex() {
 }
 
 /* Post page: fetch and render a single post. */
-async function renderPost() {
+async function renderPost(retryCount) {
+  retryCount = retryCount || 0;
   var slug = new URLSearchParams(location.search).get('slug');
   var article = document.getElementById('post-article');
   if (!slug) {
@@ -107,6 +108,13 @@ async function renderPost() {
     if (article) article.hidden = false;
   } catch (e) {
     if (article) article.hidden = true;
-    setStatus('This post could not be found.');
+    if (retryCount < 12) {
+      setStatus('Waiting for GitHub Pages to deploy… retrying automatically in 5s (' + (retryCount + 1) + '/12)');
+      setTimeout(function () {
+        renderPost(retryCount + 1);
+      }, 5000);
+    } else {
+      setStatus('This post could not be found. If you just published it, please give GitHub Pages another moment and refresh.');
+    }
   }
 }
