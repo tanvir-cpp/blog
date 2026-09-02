@@ -6,13 +6,6 @@
       "date": "2026-09-02T16:23:42.891Z",
       "teaser": "Everything after the first line becomes the body.",
       "draft": false
-    },
-    {
-      "slug": "on-writing-here",
-      "title": "On writing here",
-      "date": "2026-09-02T12:00:00.000Z",
-      "teaser": "This is the first post on this blog. It exists so the site has something to show on its first load.",
-      "draft": false
     }
   ]
 }
