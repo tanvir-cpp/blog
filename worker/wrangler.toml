@@ -9,6 +9,12 @@ GITHUB_BRANCH = "main"
 # Where the site expects posts and images (paths inside the repo)
 POSTS_DIR = "site/posts"
 IMAGES_DIR = "site/assets/img"
+# Public URL of the blog (used for "view post" links)
+SITE_URL = "https://tanvir-cpp.github.io/blog"
+
+[[kv_namespaces]]
+binding = "SESSIONS"
+id = "58153be27c4e4b088a26296eb793863a"
 
 # Secrets (never put these in this file) — set with:
 #   npx wrangler secret put TELEGRAM_BOT_TOKEN

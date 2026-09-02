@@ -1,3 +1,4 @@
 .zcode/
 worker/.webhook_secret
 node_modules/
+worker/tail*.log

@@ -85,24 +85,31 @@ Telegram should reply `{"ok":true,...}`.
 
 ## Publishing
 
-Message your bot:
+Message your bot — nothing goes live until you confirm it:
 
-- **First line = title**, the rest is the body. Example:
+1. **Send content** — a message or a photo with a caption. First line = title,
+   the rest is the body. Formatting (bold, italic, code, links, quotes) is kept.
+2. **You get a preview** — rendered in the chat, with buttons:
+   **✅ Publish · 💤 Draft · ✏️ Edit · ❌ Cancel**.
+3. Tap **Publish** and the post goes live in about a minute (Pages rebuild time).
 
-  ```
-  Notes on quiet software
-  Most tools are too loud. Here's what I'd rather use...
-  ```
+Or send `/new` for a guided flow: the bot asks for the title, then the body,
+then an optional photo (`/skip` to skip it) — and shows the same preview.
 
-- Telegram formatting (bold, italic, code, links, quotes) carries into the post.
-- **Attach a photo** with the caption structured the same way — the image is
-  uploaded to `site/assets/img/` and placed at the top of the post.
-- Start the first line with `#draft` (e.g. `#draft My title`) to save without
-  publishing. Re-send without the tag to publish it.
-- Commands: `/latest`, `/delete <slug>`, `/help`.
+Images are optional everywhere: attach a photo with a caption in one message,
+or add it via the guided flow. It's uploaded to `site/assets/img/` and placed
+at the top of the post.
 
-After publishing, GitHub Pages rebuilds (usually under a minute) and the post
-appears on the site.
+Commands:
+
+- `/new` — guided step-by-step post
+- `/latest` — published posts, tap 🗑 to delete one (with confirmation)
+- `/drafts` — saved drafts, same delete flow
+- `/delete <slug>` — delete by slug
+- `/cancel` — abandon the current draft
+- `/help`
+
+Draft sessions (including the preview state) last 6 hours, then expire.
 
 ## Customizing the site
 
