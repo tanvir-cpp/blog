@@ -26,12 +26,18 @@ export default {
       return new Response('Bad secret token', { status: 403 });
     }
 
-    const update = await request.json();
+    let update;
+    try {
+      update = await request.json();
+    } catch {
+      return new Response('Bad Request: Invalid JSON', { status: 400 });
+    }
+
     try {
       await handleUpdate(update, env);
     } catch (err) {
       console.error('handleUpdate failed:', err);
-      const chatId = update?.message?.chat?.id ?? update?.callback_query?.message?.chat?.id;
+      const chatId = update?.message?.chat?.id ?? update?.callback_query?.message?.chat?.id ?? update?.callback_query?.from?.id;
       if (chatId) {
         await tg(env, 'sendMessage', { chat_id: chatId, text: 'Something went wrong on my side. Nothing was published.' });
       }
@@ -55,16 +61,27 @@ async function handleUpdate(update, env) {
   }
 
   if (msg.text && msg.text.startsWith('/')) return handleCommand(msg, env);
-  if (await getSession(env, chatId)) return handleFlowMessage(msg, env);
+
+  const currentSess = await getSession(env, chatId);
+  if (currentSess) {
+    // If user has a pending preview and sends new content, overwrite cleanly with the new post
+    if (currentSess.step === 'confirm') {
+      return previewFromContent(msg, env);
+    }
+    return handleFlowMessage(msg, env);
+  }
   return previewFromContent(msg, env);
 }
 
 /* ————— commands ————— */
 
 async function handleCommand(msg, env) {
-  const [cmd, ...args] = msg.text.trim().split(/\s+/);
+  const [rawCmd, ...args] = msg.text.trim().split(/\s+/);
+  // Strip bot username if invoked via Telegram menu (e.g. /new@my_bot -> /new)
+  const cmd = rawCmd.toLowerCase().split('@')[0];
   const chatId = msg.chat.id;
-  switch (cmd.toLowerCase()) {
+
+  switch (cmd) {
     case '/start':
     case '/help':
       await clearSession(env, chatId);
@@ -145,6 +162,7 @@ async function listPosts(msg, env, drafts) {
 async function handleFlowMessage(msg, env) {
   const chatId = msg.chat.id;
   const sess = await getSession(env, chatId);
+  if (!sess) return;
 
   switch (sess.step) {
     case 'title':
@@ -161,7 +179,8 @@ async function handleFlowMessage(msg, env) {
       if (!msg.text) {
         return tg(env, 'sendMessage', { chat_id: chatId, text: 'That’s not text. Please send the body, or /cancel. (You can attach a photo in the next step.)' });
       }
-      sess.body = msg.text;
+      // Preserve formatting in guided flow and edit flow
+      sess.body = entitiesToMarkdown(msg.text, msg.entities || []);
       sess.step = 'photo';
       await setSession(env, chatId, sess);
       await tg(env, 'sendMessage', {
@@ -182,8 +201,11 @@ async function handleFlowMessage(msg, env) {
       break;
 
     case 'confirm':
-      await tg(env, 'sendMessage', { chat_id: chatId, text: 'There’s a post waiting above 👆 — use the buttons, or /cancel.' });
-      break;
+      return previewFromContent(msg, env);
+
+    default:
+      await clearSession(env, chatId);
+      return previewFromContent(msg, env);
   }
 }
 
@@ -194,11 +216,15 @@ async function previewFromContent(msg, env) {
   const raw = isPhoto ? (msg.caption || '') : msg.text;
   const entities = isPhoto ? (msg.caption_entities || []) : (msg.entities || []);
   const rawMd = entitiesToMarkdown(raw, entities);
+  const lines = rawMd.split('\n');
+  const title = lines[0].replace(/^#draft\s*/i, '').replace(/[*_`~\[\]()]/g, '').trim() || 'Untitled';
+  const body = lines.slice(1).join('\n').trim();
+
   const sess = {
     flow: 'quick',
     step: 'confirm',
-    title: rawMd.split('\n')[0].replace(/^#draft\s*/i, '').replace(/[*_`~\[\]()]/g, '').trim() || 'Untitled',
-    body: rawMd.includes('\n') ? rawMd.split('\n').slice(1).join('\n') : '',
+    title,
+    body,
     photo_file_id: isPhoto ? msg.photo.reduce((a, b) => (a.file_size > b.file_size ? a : b)).file_id : null,
   };
   await setSession(env, chatId, sess);
@@ -226,7 +252,6 @@ async function sendPreview(env, chatId, sess) {
   sess.step = 'confirm';
   await setSession(env, chatId, sess);
 
-  const md = buildMarkdown(sess, false);
   const parts = ['📝 Preview', '', `<b>${escHtml(sess.title)}</b>`, ''];
   parts.push(sess.body ? mdToTelegramHtml(sess.body) : '(empty body)');
   if (sess.photo_file_id) parts.push('', '🖼 A photo is attached.');
@@ -244,61 +269,82 @@ async function sendPreview(env, chatId, sess) {
 }
 
 async function handleCallback(cb, env) {
-  const chatId = cb.message?.chat?.id;
+  const chatId = cb.message?.chat?.id ?? cb.from?.id;
   const data = cb.data || '';
-  const ack = (text) => tg(env, 'answerCallbackQuery', { callback_query_id: cb.id, text });
+  const ack = (text) => tg(env, 'answerCallbackQuery', { callback_query_id: cb.id, text }).catch(() => ({}));
 
   if (String(chatId) !== String(env.CHAT_ID)) return ack('Not authorized.');
   const [action, arg] = data.split(':');
 
   if (action === 'act') return handleActionCallback(cb, arg, env, ack);
+
   if (action === 'ph') {
+    await ack('No photo, got it.');
     const sess = await getSession(env, chatId);
     if (sess && sess.step === 'photo') {
       await sendPreview(env, chatId, sess);
-      return ack('No photo, got it.');
+      return;
     }
-    return ack('Nothing in progress.');
+    return;
   }
+
   if (action === 'del') return confirmDelete(cb.message, arg, env, ack);
+
   if (action === 'delno') {
+    await ack('Kept.');
     await tg(env, 'deleteMessage', { chat_id: chatId, message_id: cb.message.message_id });
-    return ack('Kept.');
+    return;
   }
+
   if (action === 'delok') {
-    const manifest = await getManifest(env);
+    await ack('Deleting…');
+    const { manifest, sha } = await getManifestWithSha(env);
     const idx = manifest.posts.findIndex((p) => p.slug === arg);
     if (idx === -1) {
       await tg(env, 'editMessageText', { chat_id: chatId, message_id: cb.message.message_id, text: 'That post is already gone.' });
-      return ack('Already deleted.');
+      return;
     }
-    const title = manifest.posts[idx].title;
+
+    const postToDelete = manifest.posts[idx];
+    const title = postToDelete.title;
+
+    // Delete post Markdown file
     await deleteFile(env, `${env.POSTS_DIR}/${arg}.md`);
+
+    // Clean up associated image if recorded
+    if (postToDelete.image) {
+      const imgPath = postToDelete.image.startsWith('site/') ? postToDelete.image : `site/${postToDelete.image}`;
+      await deleteFile(env, imgPath);
+    }
+
     manifest.posts.splice(idx, 1);
-    await putManifest(env, manifest);
+    await putManifest(env, manifest, sha);
     await tg(env, 'editMessageText', { chat_id: chatId, message_id: cb.message.message_id, text: `🗑 Deleted “${title}”.` });
-    return ack('Deleted.');
+    return;
   }
+
   return ack('Unknown action.');
 }
 
 async function handleActionCallback(cb, action, env, ack) {
-  const chatId = cb.message.chat.id;
+  const chatId = cb.message?.chat?.id ?? cb.from?.id;
   const sess = await getSession(env, chatId);
   if (!sess || sess.step !== 'confirm') return ack('Nothing to publish — send me some content first.');
 
   if (action === 'cancel') {
+    await ack('Cancelled.');
     await clearSession(env, chatId);
     await editOrSend(cb, env, 'Cancelled — nothing was published.');
-    return ack('Cancelled.');
+    return;
   }
 
   if (action === 'edit') {
+    await ack('Let’s edit.');
     sess.flow = 'edit';
     sess.step = 'title';
     await setSession(env, chatId, sess);
     await tg(env, 'sendMessage', { chat_id: chatId, text: `Editing. Current title: “${sess.title}”\n\nSend the new title.` });
-    return ack('Let’s edit.');
+    return;
   }
 
   if (action === 'publish' || action === 'draft') {
@@ -328,20 +374,48 @@ async function editOrSend(cb, env, text) {
 /* ————— publishing ————— */
 
 async function commitPost(env, sess, draft) {
-  const slug = slugify(sess.title);
+  const isEdit = sess.flow === 'edit';
+  let slug = slugify(sess.title);
   const now = new Date().toISOString();
 
+  let imageRelativePath = null;
   let imageMd = '';
   if (sess.photo_file_id) {
-    const imageUrl = await commitImage(env, sess.photo_file_id, Math.floor(Date.now() / 1000));
-    imageMd = `![image](${imageUrl})\n\n`;
+    imageRelativePath = await commitImage(env, sess.photo_file_id, Math.floor(Date.now() / 1000));
+    imageMd = `![image](${imageRelativePath})\n\n`;
   }
   const md = imageMd + (sess.body || '');
 
-  // Read-modify-write the manifest; retry on commit races.
+  // Check manifest for slug collisions if this is not an explicit edit
+  const initialData = await getManifestWithSha(env);
+  let manifest = initialData.manifest;
+  let manifestSha = initialData.sha;
+
+  const existingPost = manifest.posts.find((p) => p.slug === slug);
+  if (existingPost && !isEdit) {
+    let counter = 2;
+    let candidate = `${slug}-${counter}`;
+    while (manifest.posts.some((p) => p.slug === candidate)) {
+      counter++;
+      candidate = `${slug}-${counter}`;
+    }
+    slug = candidate;
+  }
+
+  const existingDate = manifest.posts.find((p) => p.slug === slug)?.date;
+  const commitMsg = draft ? 'save draft' : (existingDate ? 'edit post' : 'new post');
+
+  // 1. Commit post Markdown once
+  await putFile(env, `${env.POSTS_DIR}/${slug}.md`, md, commitMsg);
+
+  // 2. Commit updated manifest with conflict retry
   for (let attempt = 0; attempt < 4; attempt++) {
-    const manifest = await getManifest(env);
-    const existingDate = manifest.posts.find((p) => p.slug === slug)?.date;
+    if (attempt > 0) {
+      const refreshed = await getManifestWithSha(env);
+      manifest = refreshed.manifest;
+      manifestSha = refreshed.sha;
+    }
+
     const entry = {
       slug,
       title: sess.title,
@@ -349,12 +423,15 @@ async function commitPost(env, sess, draft) {
       teaser: (sess.body || '').replace(/!\[[^\]]*\]\([^)]*\)/g, '').replace(/[#>*_`~\[\]()]/g, '').replace(/\s+/g, ' ').trim().slice(0, 160),
       draft,
     };
+    if (imageRelativePath) {
+      entry.image = imageRelativePath;
+    }
+
     manifest.posts = manifest.posts.filter((p) => p.slug !== slug);
     manifest.posts.push(entry);
 
     try {
-      await putFile(env, `${env.POSTS_DIR}/${slug}.md`, md, draft ? 'save draft' : (existingDate ? 'edit post' : 'new post'));
-      await putManifest(env, manifest);
+      await putManifest(env, manifest, manifestSha);
       return slug;
     } catch (err) {
       if (attempt === 3) throw err;
@@ -393,66 +470,156 @@ async function commitImage(env, fileId, unixDate) {
   const ext = (fileMeta.file_path.split('.').pop() || 'jpg').toLowerCase();
   const d = new Date(unixDate * 1000);
   const name = `${d.toISOString().slice(0, 10)}-${Date.now()}.${ext}`;
+
+  // Commit image to repo path (e.g. site/assets/img/<name>)
   await putFileBinary(env, `${env.IMAGES_DIR}/${name}`, buf, 'add image');
-  return `/${env.IMAGES_DIR}/${name}`;
+
+  // Return relative path for markdown embedding: assets/img/<name>
+  // Because post.html is served from site root, this resolves properly on GitHub Pages
+  return `assets/img/${name}`;
 }
 
 function slugify(s) {
   const base = s.toLowerCase()
-    .replace(/[^\w\s-]/g, '')
+    .replace(/[^\p{L}\p{N}\s-]/gu, '') // Keep Unicode letters and numbers
     .trim()
     .replace(/\s+/g, '-')
-    .slice(0, 60)
+    .slice(0, 45)                      // Keep under 45 chars so delok:<slug> <= 64 bytes
     .replace(/^-+|-+$/g, '');
   return base || `post-${Date.now()}`;
 }
 
-/* Apply Telegram message entities to raw text, producing Markdown. */
+/* Apply Telegram message entities to raw text, producing Markdown without offset corruption. */
 function entitiesToMarkdown(text, entities) {
-  const sorted = [...entities].sort((a, b) => b.offset - a.offset);
-  let out = text;
-  for (const e of sorted) {
-    const start = e.offset, end = e.offset + e.length;
-    const inner = out.slice(start, end);
-    let wrapped;
+  if (!text || !entities || !entities.length) return text || '';
+
+  const tags = [];
+  for (const e of entities) {
+    let open = '', close = '';
     switch (e.type) {
-      case 'bold': wrapped = `**${inner}**`; break;
-      case 'italic': wrapped = `*${inner}*`; break;
-      case 'underline': wrapped = `<u>${inner}</u>`; break;
-      case 'strikethrough': wrapped = `~~${inner}~~`; break;
-      case 'code': wrapped = '`' + inner + '`'; break;
-      case 'pre': wrapped = '```\n' + inner + '\n```'; break;
-      case 'blockquote': wrapped = inner.split('\n').map((l) => '> ' + l).join('\n'); break;
-      case 'url': wrapped = `[${inner}](${inner})`; break;
-      case 'text_link': wrapped = `[${inner}](${e.url})`; break;
-      default: wrapped = inner;
+      case 'bold': open = '**'; close = '**'; break;
+      case 'italic': open = '*'; close = '*'; break;
+      case 'underline': open = '<u>'; close = '</u>'; break;
+      case 'strikethrough': open = '~~'; close = '~~'; break;
+      case 'code': open = '`'; close = '`'; break;
+      case 'pre': open = '```\n'; close = '\n```'; break;
+      case 'blockquote': {
+        const inner = text.slice(e.offset, e.offset + e.length);
+        const quoted = inner.split('\n').map((l) => `> ${l}`).join('\n');
+        tags.push({ pos: e.offset, type: 'replace', content: quoted, len: e.length });
+        continue;
+      }
+      case 'url': open = '['; close = `](${text.slice(e.offset, e.offset + e.length)})`; break;
+      case 'text_link': open = '['; close = `](${e.url})`; break;
+      default: continue;
     }
-    out = out.slice(0, start) + wrapped + out.slice(end);
+    tags.push({ pos: e.offset, type: 'open', tag: open, len: e.length });
+    tags.push({ pos: e.offset + e.length, type: 'close', tag: close, len: e.length });
+  }
+
+  // Sort: higher pos first.
+  // If same pos: close tags before open tags.
+  // If both open: larger len first (outermost starts first).
+  // If both close: smaller len first (innermost closes first).
+  tags.sort((a, b) => {
+    if (b.pos !== a.pos) return b.pos - a.pos;
+    if (a.type === 'replace' || b.type === 'replace') return 0;
+    if (a.type !== b.type) return a.type === 'close' ? -1 : 1;
+    if (a.type === 'open') return b.len - a.len;
+    return a.len - b.len;
+  });
+
+  let out = text;
+  for (const t of tags) {
+    if (t.type === 'replace') {
+      out = out.slice(0, t.pos) + t.content + out.slice(t.pos + t.len);
+    } else {
+      out = out.slice(0, t.pos) + t.tag + out.slice(t.pos);
+    }
   }
   return out;
 }
 
-/* Rough markdown → Telegram HTML for previews (subset: bold, italic, strike, code, pre, links, quotes). */
+/* Rough markdown → Telegram HTML for previews. */
 function mdToTelegramHtml(md) {
+  if (!md) return '';
+
   const blocks = [];
+  // 1. Code blocks (extract before escaping)
   let text = md.replace(/```(?:\w+)?\n([\s\S]*?)```/g, (_, code) => {
     blocks.push(`<pre>${escHtml(code.replace(/\n$/, ''))}</pre>`);
     return `\u0000B${blocks.length - 1}\u0000`;
   });
-  text = escHtml(text);
+
+  // 2. Blockquotes (group contiguous quote lines into a single blockquote)
+  const lines = text.split('\n');
+  const quoteGrouped = [];
+  let inQuote = false;
+  let quoteLines = [];
+
+  for (const line of lines) {
+    if (line.startsWith('> ') || line === '>') {
+      inQuote = true;
+      quoteLines.push(line.replace(/^> ?/, ''));
+    } else {
+      if (inQuote) {
+        quoteGrouped.push(`<blockquote>${escHtml(quoteLines.join('\n'))}</blockquote>`);
+        quoteLines = [];
+        inQuote = false;
+      }
+      quoteGrouped.push(escHtml(line));
+    }
+  }
+  if (inQuote) {
+    quoteGrouped.push(`<blockquote>${escHtml(quoteLines.join('\n'))}</blockquote>`);
+  }
+  text = quoteGrouped.join('\n');
+
+  // 3. Inline formatting
   text = text.replace(/`([^`\n]+)`/g, (_, c) => `<code>${c}</code>`);
   text = text.replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>');
   text = text.replace(/(^|\W)\*([^*\n]+)\*(?=\W|$)/g, '$1<i>$2</i>');
   text = text.replace(/(^|\W)_([^_\n]+)_(?=\W|$)/g, '$1<i>$2</i>');
   text = text.replace(/~~([^~\n]+)~~/g, '<s>$1</s>');
-  text = text.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2">$1</a>');
-  text = text.split('\n').map((l) => (l.startsWith('&gt; ') ? `<blockquote>${l.slice(5)}</blockquote>` : l)).join('\n');
+  text = text.replace(/&lt;u&gt;([\s\S]*?)&lt;\/u&gt;/g, '<u>$1</u>');
+
+  // 4. Links: convert [text](url) to <a href="...">text</a> safely
+  text = text.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, linkText, href) => {
+    const cleanHref = href.replace(/&amp;/g, '&');
+    return `<a href="${cleanHref}">${linkText}</a>`;
+  });
+
+  // 5. Restore code blocks
   text = text.replace(/\u0000B(\d+)\u0000/g, (_, i) => blocks[+i]);
   return text;
 }
 
 function escHtml(s) {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+/* ————— modern utf-8 base64 encoding/decoding ————— */
+
+function utf8ToBase64(str) {
+  const bytes = new TextEncoder().encode(str);
+  let bin = '';
+  const chunk = 8192;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  }
+  return btoa(bin);
+}
+
+function base64ToUtf8(b64) {
+  const bin = atob(b64.replace(/\s/g, ''));
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) {
+    bytes[i] = bin.charCodeAt(i);
+  }
+  return new TextDecoder().decode(bytes);
 }
 
 /* ————— github contents api ————— */
@@ -463,7 +630,6 @@ function gh(env, path) {
 
 function ghHeaders(env) {
   return {
-    // GitHub rejects API requests without a User-Agent; Workers fetch strips the default one.
     'User-Agent': 'tg-blog-bot',
     Authorization: `Bearer ${env.GITHUB_TOKEN}`,
     Accept: 'application/vnd.github+json',
@@ -479,18 +645,21 @@ async function getSha(env, path) {
   return (await res.json()).sha;
 }
 
-async function putFile(env, path, text, message) {
-  return putFileBase(env, path, btoa(unescape(encodeURIComponent(text))), message);
+async function putFile(env, path, text, message, knownSha) {
+  return putFileBase(env, path, utf8ToBase64(text), message, knownSha);
 }
 
 async function putFileBinary(env, path, bytes, message) {
   let bin = '';
-  bytes.forEach((b) => (bin += String.fromCharCode(b)));
+  const chunk = 8192;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  }
   return putFileBase(env, path, btoa(bin), message);
 }
 
-async function putFileBase(env, path, base64, message) {
-  const sha = await getSha(env, path);
+async function putFileBase(env, path, base64, message, knownSha) {
+  const sha = knownSha !== undefined ? knownSha : await getSha(env, path);
   const res = await fetch(gh(env, path), {
     method: 'PUT',
     headers: ghHeaders(env),
@@ -518,20 +687,25 @@ async function deleteFile(env, path) {
   if (!res.ok && res.status !== 404) throw new Error(`deleteFile ${path} → ${res.status}`);
 }
 
-async function getManifest(env) {
+async function getManifestWithSha(env) {
   const res = await fetch(`${gh(env, `${env.POSTS_DIR}/index.json`)}?ref=${env.GITHUB_BRANCH}`, {
     headers: ghHeaders(env),
   });
-  if (res.status === 404) return { posts: [] };
+  if (res.status === 404) return { manifest: { posts: [] }, sha: null };
   if (!res.ok) throw new Error(`getManifest → ${res.status}: ${(await res.text()).slice(0, 300)}`);
   const json = await res.json();
-  const text = decodeURIComponent(escape(atob(json.content.replace(/\n/g, ''))));
-  return JSON.parse(text);
+  const text = base64ToUtf8(json.content);
+  return { manifest: JSON.parse(text), sha: json.sha };
 }
 
-async function putManifest(env, manifest) {
+async function getManifest(env) {
+  const data = await getManifestWithSha(env);
+  return data.manifest;
+}
+
+async function putManifest(env, manifest, knownSha) {
   manifest.posts.sort((a, b) => b.date.localeCompare(a.date));
-  await putFile(env, `${env.POSTS_DIR}/index.json`, JSON.stringify(manifest, null, 2) + '\n', 'update index');
+  await putFile(env, `${env.POSTS_DIR}/index.json`, JSON.stringify(manifest, null, 2) + '\n', 'update index', knownSha);
 }
 
 /* ————— session state (KV) ————— */

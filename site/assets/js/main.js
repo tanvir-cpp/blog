@@ -38,7 +38,7 @@ async function loadManifest() {
 }
 
 async function loadPost(slug) {
-  var res = await fetch('posts/' + slug + '.md', { cache: 'no-cache' });
+  var res = await fetch('posts/' + encodeURIComponent(slug) + '.md', { cache: 'no-cache' });
   if (!res.ok) throw new Error('post ' + res.status);
   return res.text();
 }
@@ -63,11 +63,16 @@ async function renderIndex() {
       var li = document.createElement('li');
       li.innerHTML =
         '<span class="meta"></span>' +
-        '<a class="title" href="post.html?slug=' + encodeURIComponent(p.slug) + '"></a>' +
-        '<p class="teaser"></p>';
+        '<a class="title" href="post.html?slug=' + encodeURIComponent(p.slug) + '"></a>';
+      var teaser = p.teaser || teaserOf(p.body || '');
+      if (teaser) {
+        var teaserEl = document.createElement('p');
+        teaserEl.className = 'teaser';
+        teaserEl.textContent = teaser;
+        li.appendChild(teaserEl);
+      }
       li.querySelector('.meta').textContent = fmtDate(p.date);
       li.querySelector('a.title').textContent = p.title;
-      li.querySelector('.teaser').textContent = p.teaser || teaserOf(p.body || '');
       list.appendChild(li);
     });
     list.hidden = false;
@@ -79,7 +84,12 @@ async function renderIndex() {
 /* Post page: fetch and render a single post. */
 async function renderPost() {
   var slug = new URLSearchParams(location.search).get('slug');
-  if (!slug) { setStatus('No post specified.'); return; }
+  var article = document.getElementById('post-article');
+  if (!slug) {
+    if (article) article.hidden = true;
+    setStatus('No post specified.');
+    return;
+  }
 
   try {
     var manifest = await loadManifest();
@@ -94,7 +104,9 @@ async function renderPost() {
     var body = document.getElementById('post-body');
     body.innerHTML = renderMarkdown(md);
     body.hidden = false;
+    if (article) article.hidden = false;
   } catch (e) {
+    if (article) article.hidden = true;
     setStatus('This post could not be found.');
   }
 }
