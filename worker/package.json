@@ -1,0 +1,11 @@
+{
+  "name": "tg-blog-bot",
+  "private": true,
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev"
+  },
+  "devDependencies": {
+    "wrangler": "^3.78.0"
+  }
+}
