@@ -1,6 +1,13 @@
 {
   "posts": [
     {
+      "slug": "my-first-real-post",
+      "title": "My first real post",
+      "date": "2026-09-02T16:23:42.891Z",
+      "teaser": "Everything after the first line becomes the body.",
+      "draft": false
+    },
+    {
       "slug": "hello-world-from-telegram",
       "title": "Hello world from Telegram",
       "date": "2026-09-02T16:19:19.408Z",
