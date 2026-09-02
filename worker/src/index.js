@@ -251,6 +251,8 @@ function gh(env, path) {
 
 function ghHeaders(env) {
   return {
+    // GitHub rejects API requests without a User-Agent; Workers fetch strips the default one.
+    'User-Agent': 'tg-blog-bot',
     Authorization: `Bearer ${env.GITHUB_TOKEN}`,
     Accept: 'application/vnd.github+json',
     'X-GitHub-Api-Version': '2022-11-28',
@@ -309,7 +311,7 @@ async function getManifest(env) {
     headers: ghHeaders(env),
   });
   if (res.status === 404) return { posts: [] };
-  if (!res.ok) throw new Error(`getManifest → ${res.status}`);
+  if (!res.ok) throw new Error(`getManifest → ${res.status}: ${(await res.text()).slice(0, 300)}`);
   const json = await res.json();
   const text = decodeURIComponent(escape(atob(json.content.replace(/\n/g, ''))));
   return JSON.parse(text);
