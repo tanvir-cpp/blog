@@ -1,0 +1,1 @@
+This post was published by sending a message to the bot. It supports *bold*, _italic_, `code` and [links](https://github.com/tanvir-cpp/blog).
