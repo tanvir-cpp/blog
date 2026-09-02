@@ -8,13 +8,6 @@
       "draft": false
     },
     {
-      "slug": "hello-world-from-telegram",
-      "title": "Hello world from Telegram",
-      "date": "2026-09-02T16:19:19.408Z",
-      "teaser": "This post was published by sending a message to the bot. It supports bold, italic, code and links(https://github.com/tanvir-cpp/blog).",
-      "draft": false
-    },
-    {
       "slug": "on-writing-here",
       "title": "On writing here",
       "date": "2026-09-02T12:00:00.000Z",
