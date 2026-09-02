@@ -1,5 +1,33 @@
 /* Shared rendering logic for index and post pages. */
 
+/* ————— theme toggle ————— */
+
+function initTheme() {
+  var current = document.documentElement.getAttribute('data-theme') || 'light';
+  updateThemeButton(current);
+
+  var btn = document.getElementById('theme-toggle');
+  if (btn) {
+    btn.onclick = function() {
+      var next = (document.documentElement.getAttribute('data-theme') === 'dark') ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', next);
+      localStorage.setItem('blog_theme', next);
+      updateThemeButton(next);
+    };
+  }
+}
+
+function updateThemeButton(theme) {
+  var btn = document.getElementById('theme-toggle');
+  if (btn) {
+    btn.textContent = theme === 'dark' ? 'Light' : 'Dark';
+  }
+}
+
+document.addEventListener('DOMContentLoaded', initTheme);
+
+/* ————— utilities ————— */
+
 function setStatus(msg) {
   var el = document.getElementById('status');
   if (el) {
@@ -43,7 +71,8 @@ async function loadPost(slug) {
   return res.text();
 }
 
-/* Home page: list published posts, newest first. */
+/* ————— home page ————— */
+
 async function renderIndex() {
   var list = document.getElementById('post-list');
   try {
@@ -61,18 +90,16 @@ async function renderIndex() {
     list.innerHTML = '';
     posts.forEach(function (p) {
       var li = document.createElement('li');
+      var teaser = p.teaser || teaserOf(p.body || '');
       li.innerHTML =
         '<span class="meta"></span>' +
-        '<a class="title" href="post.html?slug=' + encodeURIComponent(p.slug) + '"></a>';
-      var teaser = p.teaser || teaserOf(p.body || '');
-      if (teaser) {
-        var teaserEl = document.createElement('p');
-        teaserEl.className = 'teaser';
-        teaserEl.textContent = teaser;
-        li.appendChild(teaserEl);
-      }
+        '<a class="title" href="post.html?slug=' + encodeURIComponent(p.slug) + '"></a>' +
+        (teaser ? '<p class="teaser"></p>' : '');
       li.querySelector('.meta').textContent = fmtDate(p.date);
       li.querySelector('a.title').textContent = p.title;
+      if (teaser) {
+        li.querySelector('.teaser').textContent = teaser;
+      }
       list.appendChild(li);
     });
     list.hidden = false;
@@ -81,7 +108,8 @@ async function renderIndex() {
   }
 }
 
-/* Post page: fetch and render a single post. */
+/* ————— post page ————— */
+
 async function renderPost(retryCount) {
   retryCount = retryCount || 0;
   var slug = new URLSearchParams(location.search).get('slug');
@@ -109,12 +137,12 @@ async function renderPost(retryCount) {
   } catch (e) {
     if (article) article.hidden = true;
     if (retryCount < 12) {
-      setStatus('Waiting for GitHub Pages to deploy… retrying automatically in 5s (' + (retryCount + 1) + '/12)');
+      setStatus('Waiting for GitHub Pages to deploy… retrying in 5s (' + (retryCount + 1) + '/12)');
       setTimeout(function () {
         renderPost(retryCount + 1);
       }, 5000);
     } else {
-      setStatus('This post could not be found. If you just published it, please give GitHub Pages another moment and refresh.');
+      setStatus('This post could not be found. (If you just published, please wait a minute and refresh.)');
     }
   }
 }
