@@ -3,9 +3,8 @@ main = "src/index.js"
 compatibility_date = "2024-09-01"
 
 [vars]
-# EDIT THESE: your GitHub username and repo name
-GITHUB_OWNER = "your-username"
-GITHUB_REPO = "your-repo"
+GITHUB_OWNER = "tanvir-cpp"
+GITHUB_REPO = "blog"
 GITHUB_BRANCH = "main"
 # Where the site expects posts and images (paths inside the repo)
 POSTS_DIR = "site/posts"
